@@ -19,8 +19,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from langchain_community.document_loaders import DirectoryLoader, TextLoader, PyPDFLoader
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -51,7 +50,9 @@ class EnterpriseRAGBot:
         self.persist_dir = persist_dir
         self.model_name = model_name
         self.vector_store: Chroma | None = None
-        self.qa_chain: RetrievalQA | None = None
+        self.prompt_template: PromptTemplate | None = None
+        self.retriever = None
+        self.llm: ChatOpenAI | None = None
 
     def _load_documents(self) -> list[Any]:
         """加载知识库目录内的文档。
@@ -122,12 +123,12 @@ class EnterpriseRAGBot:
             self._build_vector_store()
 
     def build_qa_chain(self) -> None:
-        """构建 RAG 问答链。"""
+        """构建 RAG 所需组件（检索器 + 提示词 + 大模型）。"""
         self._load_or_create_vector_store()
         assert self.vector_store is not None
 
         # 提示词强调仅基于内部资料回答，降低幻觉风险
-        prompt = PromptTemplate(
+        self.prompt_template = PromptTemplate(
             input_variables=["context", "question"],
             template=(
                 "你是企业内部知识库助手，需基于提供的上下文回答问题。\n"
@@ -141,33 +142,33 @@ class EnterpriseRAGBot:
             ),
         )
 
-        llm = ChatOpenAI(model=self.model_name, temperature=0)
-        retriever = self.vector_store.as_retriever(
+        self.llm = ChatOpenAI(model=self.model_name, temperature=0)
+        self.retriever = self.vector_store.as_retriever(
             search_type="similarity",
             search_kwargs={"k": 4},
         )
 
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True,
-        )
-
     def ask(self, question: str) -> dict[str, Any]:
         """执行问答并返回答案 + 来源文档。"""
-        if self.qa_chain is None:
+        if self.prompt_template is None or self.retriever is None or self.llm is None:
             self.build_qa_chain()
-        assert self.qa_chain is not None
+        assert self.prompt_template is not None
+        assert self.retriever is not None
+        assert self.llm is not None
 
-        result = self.qa_chain.invoke({"query": question})
-        sources = [
-            doc.metadata.get("source", "未知来源")
-            for doc in result.get("source_documents", [])
-        ]
+        source_documents = self.retriever.invoke(question)
+        context = "\n\n".join(doc.page_content for doc in source_documents)
+        prompt_text = self.prompt_template.format(context=context, question=question)
+        llm_response = self.llm.invoke(prompt_text)
+
+        answer = (
+            llm_response.content
+            if hasattr(llm_response, "content")
+            else str(llm_response)
+        )
+        sources = [doc.metadata.get("source", "未知来源") for doc in source_documents]
         return {
-            "answer": result.get("result", ""),
+            "answer": answer,
             "sources": sorted(set(sources)),
         }
 

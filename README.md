@@ -11,7 +11,7 @@
 
 - 自动读取 `knowledge_base/` 目录下的 `txt/md/pdf` 文档。
 - 使用 `OpenAIEmbeddings + Chroma` 建立本地向量索引。
-- 使用 `ChatOpenAI` + `RetrievalQA` 实现基于企业知识的问答。
+- 使用 `ChatOpenAI` + 检索器（Retriever）实现基于企业知识的问答。
 - 支持两种方式调用：
   - CLI 命令行对话
   - FastAPI HTTP 服务
